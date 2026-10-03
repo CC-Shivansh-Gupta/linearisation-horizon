@@ -1,0 +1,92 @@
+# Q1 preregistration parameters. FROZEN at the first commit that contains this file.
+# The verdict script reads every threshold from this file and nowhere else.
+
+protocol_version: Q1-1
+relation:
+  hankel_protocol_1: {freeze: 0173614f918c0828b0f978378f1c0c2807be9990, result: f0e8c94c2a111b9bb8d30f8857cd36ba3824ac98}
+  hankel_protocol_2: {freeze: c2474be59c90df62c40762a3a6d438269d3a1657, result: 00a361640cdcbca0bdd728ddb6d9dcd544a3bbbd}
+  closeout_note: 480306d4ef433bb8230880f5c8ed916b9233b579
+  verdict_effect_on_completed_studies: none
+
+models:
+  family: TD-MPC2
+  code_repo: https://github.com/nicklashansen/tdmpc2
+  code_commit: e9f5932
+  checkpoint_source: https://huggingface.co/nicklashansen/tdmpc2
+  checkpoint_revision: 8fb2a82e
+  model_size: 5
+  tasks: [walker-stand, cheetah-jump, reacher-easy, finger-turn-easy, hopper-hop-backwards]
+  seeds: [1, 2, 3]
+  layout_screen: none                       # a key-only load would consume the untouched status (PREREGISTRATION §4)
+  post_freeze_load_failure: exclude         # never convert, never substitute
+  checkpoint_sha256:                        # copied from hankel-hierarchy/prereg-2/config/prereg.yaml alternate_sha256
+    walker-stand-1.pt: 90d4fbacc7cf98a09fb6e13bacf5ce141712d4bb6d710836121681a20cee16b2
+    walker-stand-2.pt: 28907db98f3eba18f2a7c3e54484ba2f2a434766c1e87b45963fc60cc3aaa8f8
+    walker-stand-3.pt: 369efb7f303e888a69a37967a9516b17826e53bbcf4a7a605a2bcf6c4bebc475
+    cheetah-jump-1.pt: aadfc5547a46c12523ed2bc165844d50f5f150d35da112efe8aad3c3eb928d74
+    cheetah-jump-2.pt: 1401b51dc1840945816820f376441875516a054794e5e1480d553f05c99e5ad9
+    cheetah-jump-3.pt: c9657e02b970032af47df26f0231cbcd26bad88f333e6b4346b62be8c3e8a3a0
+    reacher-easy-1.pt: 4e415fc308fed6b46a944cbdbaf8f1551e73b43b2d6770c78f440bd36b61deb3
+    reacher-easy-2.pt: cefe61226625b7864f8f332e02c59a60fe9a54c0b2360af2bd7f93eadbe88bb7
+    reacher-easy-3.pt: d72b39d437066845ec7f077620399088997529b9c12475ab29e32d65da6bbd77
+    finger-turn-easy-1.pt: 4302b7743cf252c9a323ecae747139f91f9875ca3c21aa931b22fc5f008e629f
+    finger-turn-easy-2.pt: ea59b93b67dec59540ec7e48508c173436f049410d47a495e6c5de727c40bac4
+    finger-turn-easy-3.pt: a62e6ad617b82c428ddea8289c659655143deabdf1f2e641f6a30b9e070e0aae
+    hopper-hop-backwards-1.pt: e84f8972bf246301cb235b3c2343cde7f3b41ca6f27458b4148dce9628368f60
+    hopper-hop-backwards-2.pt: e9b17ee8c07a52db545340f7ffd06a5bc1fb9588d84344cf35ccb930be550ddc
+    hopper-hop-backwards-3.pt: 2b5249d339aefa32b4c0195e957b0a5f3606badbdee68fb4fb77bdfa926834cc
+  excluded:
+    loaded_by_protocols_1_2: 35             # 18 (incl. humanoid-walk-3) + 17, and all their controls
+    keys_inspected: [humanoid-stand-1.pt, humanoid-stand-2.pt, humanoid-stand-3.pt]
+    discovery_set: not used, not run
+
+rollouts:
+  episodes: 10
+  env_seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # torch seed = env seed
+  eval_mode: true                           # protocol 1 C7
+  dtype: float64                            # protocol 1 C8: float64 copy, z_t re-encoded
+  simulator: {dm_control: 1.0.24, mujoco: 3.2.4}   # protocol 1 C11
+  anchors: {first: 128, step: 10, last: 368}       # 25 per episode, 250 per model
+
+response:
+  rollout: open_loop_logged_actions         # WorldModel.next with the episode's own actions; no re-planning
+  error: relative_l2                        # e_h = ||Delta_h - P_h delta||_2 / ||Delta_h||_2, full 512 coords
+  unresolved_if_response_below_rel: 1.0e-10 # ||Delta_h|| < 1e-10 ||delta|| => e = +inf
+  linearisations:
+    nom: jacobians_along_nominal_model_rollout
+    real: jacobians_at_encoded_real_states  # = Phi(tau+h, tau) of protocols 1-2
+  jvp: torch.func.jvp
+
+perturbation:
+  construction: simnorm_logit               # z' = SimNorm(y_tau + t*eta), eta ~ N(0,I) centred per group of 8
+  size_rule: epsilon_times_sqrt2            # s = eps * sqrt(2), the simplex vertex distance; no checkpoint quantity (review O2)
+  epsilon_primary: 0.1                      # s = 0.14142135623730953
+  epsilon_reported: [0.01, 0.1, 1.0]
+  vertex_distance: 1.4142135623730951
+  m1_use: reported_descriptive_only         # median one-step consistency error and s/m1; never sets a perturbation or a verdict
+  bisection_rel_tol: 1.0e-9
+  t_max: 100.0                              # target not reached => pair unresolved
+  directions_per_anchor: 8
+  eta_draw: "numpy Generator(PCG64(seed)).standard_normal(512), float64, reshaped (64, 8); one call, nothing else drawn"
+  seed_rule: "first 8 bytes big-endian of sha256('{task}|{seed}|{episode}|{tau}|{j}') -> numpy PCG64"
+  seed_test_vector: {string: "walker-stand|1|0|128|0", sha256: 79fb6b1a9104edd5c123a8b9f5460943b05fe5b7d4000b4e259b27e1ae9c0568, seed: 8789736859589995989, first_draws: [1.9149714590152809, 0.9242923568957517, -1.0555831182448194]}
+
+horizons:
+  grid: [1, 2, 4, 8, 16, 32, 64, 128]
+  primary_window: 64
+  secondary_window: 16
+  reported_only: [128]
+
+decision:
+  tolerance_primary: 0.10                   # median e_h <= 0.10; arcsin(0.1) = 5.7 deg
+  tolerances_reported: [0.05, 0.10, 0.25, 0.50]
+  statistic: median_over_anchors_and_directions
+  validity_horizon: largest_h_with_pass_at_every_grid_h_up_to_it   # fail at h=1 => 0
+  model_criterion: {Q1.1: "h_star_nom >= 64", Q1.2: "h_star_real >= 64"}
+  secondary_model_criterion: {Q1.1: "h_star_nom >= 16", Q1.2: "h_star_real >= 16"}
+  task_min_seeds: 2                         # of 3; 2-of-2 after one exclusion; < 2 loadable => cannot support
+  hypothesis_min_tasks: 4                   # of 5
+
+reported_descriptives:
+  latent_diameter: 11.3137                  # sqrt(128): 64 simplices of 8, vertex distance sqrt(2)
+  planner_min_std: 0.05                     # tdmpc2/config.yaml at e9f5932
