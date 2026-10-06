@@ -190,4 +190,4 @@ def write_environment(out):
 		except Exception as e:
 			lines.append(f"{pkg} unavailable ({e})")
 	Path(out).mkdir(parents=True, exist_ok=True)
-	(Path(out) / "ENVIRONMENT.txt").write_text("\n".join(lines) + "\n")
+	(Path(out) / "ENVIRONMENT.txt").write_bytes(("\n".join(lines) + "\n").encode("utf-8"))   # bytes: no CRLF on Windows

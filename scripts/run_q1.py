@@ -1,23 +1,31 @@
 """Q1 driver (PREREGISTRATION.md §9-§11). NOT RUN. It needs a CUDA GPU and TD-MPC2 at the pinned commit.
 
-    python -m scripts.run_q1 --tdmpc2 PATH/tdmpc2/tdmpc2 --ckpt-dir DIR --go-ahead "<who, when, which message>" [--tasks ...]
+Two stages, each a separate command with its own go-ahead record, so S5 can be authorised and run before the
+confirmatory run is:
 
-Refuses to start unless ALL of these hold, because the protocol-2 incident (P1) was a run that went ahead of the
-reviewer's authorisation, and because two earlier runs recorded no code identity (closeout note, limitation 5):
+    python -m scripts.run_q1 s5           --tdmpc2 PATH/tdmpc2/tdmpc2 --go-ahead "<who, when, which message>"
+    python -m scripts.run_q1 confirmatory --tdmpc2 PATH/tdmpc2/tdmpc2 --ckpt-dir DIR --go-ahead "<...>" [--tasks ...]
+
+Each stage refuses to start unless ALL of these hold, because the protocol-2 incident (P1) was a run that went ahead
+of the reviewer's authorisation, and because two earlier runs recorded no code identity (closeout note, limitation 5):
   1. --go-ahead is given. It is a written record of the reviewer's explicit execution go-ahead (§9 step 3), copied into
-     results/RUN.json. It cannot authenticate anything; the person running it is the one who has to have the go-ahead.
+     RUN.json. It cannot authenticate anything; the person running it is the one who has to have the go-ahead.
   2. The freeze commit is an ancestor of HEAD and the three frozen files equal the freeze commit byte for byte.
   3. No tracked file is modified, so HEAD identifies the code exactly. HEAD is printed and written into RUN.json and into
-     every per-model file.
+     every output file.
+The confirmatory stage also refuses unless results/s5/s5.json exists, was written at the same HEAD, and every check passed.
+A fix after a failed S5 is a new commit, so S5 has to be rerun at that commit before the confirmatory stage can start.
 
-Order (§10): S5 first, on a random-init network with no checkpoint; then, for each of the 15 files, in the order of
-config/prereg.yaml: SHA-256 check, load in the pinned code, 10 rollouts, the §5 statistics at every scale for both
-linearisations. A file that fails its hash or its load is recorded in results/diagnostics/{task}_s{seed}_load_failure.json
-and excluded: no conversion, no substitution (§4, R2). A file that is simply absent is an error, not an exclusion.
+S5 (§10) uses a random-init network with no checkpoint, and prints and stores pass/fail per check, never a value.
+Confirmatory: for each of the 15 files, in the order of config/prereg.yaml: SHA-256 check, load in the pinned code,
+10 rollouts, the §5 statistics at every scale for both linearisations. A file that fails its hash or its load is recorded
+in diagnostics/{task}_s{seed}_load_failure.json and excluded: no conversion, no substitution (§4, R2). A file that is
+simply absent is an error, not an exclusion.
 
-The run prints no statistic and computes no verdict. The verdict is a separate, deliberate command
-(python -m scripts.lh_verdict), to be run only after the reviewer releases the outputs. At the end the run writes
-results/MANIFEST.sha256 and prints its SHA-256, so the outputs can stay sealed and only that digest be shared.
+Neither stage prints a statistic or computes a verdict. The verdict is a separate, deliberate command
+(python -m scripts.lh_verdict results/confirmatory), to be run only after the reviewer releases the outputs. Each stage
+ends by writing results/{stage}/MANIFEST.sha256 (sha256sum -b format: one line per output file) and the SHA-256 of that
+manifest to results/{stage}.manifest-digest.txt, outside the sealed directory, and prints it. Only that digest is sent.
 """
 import argparse
 import hashlib
@@ -45,6 +53,7 @@ ANCHORS = list(range(CFG["rollouts"]["anchors"]["first"], CFG["rollouts"]["ancho
 TOLERANCES = CFG["decision"]["tolerances_reported"]
 TOL_PRIMARY = CFG["decision"]["tolerance_primary"]
 H_MAX = max(GRID)
+HEAD = None   # set once by main(), after provenance()
 
 
 def git(*args):
@@ -106,10 +115,19 @@ def s5(T, device, out, head):
 			(torch.linalg.vector_norm(P - etas @ lead.T) / torch.linalg.vector_norm(etas @ lead.T)).item() <= 1e-10,
 		"batched_next_equals_unbatched": (f(Z[:3], acts[:3]) - torch.stack([f(Z[i], acts[i]) for i in range(3)])).abs().max().item() <= 1e-12,
 	}
+	checks = {k: bool(v) for k, v in checks.items()}
 	for k, ok in checks.items():
 		print(f"S5 {'PASS' if ok else 'FAIL'}  {k}", flush=True)
-	_write(Path(out) / "s5.json", {"head": head, "checks": checks, "values_printed": False})
-	assert all(checks.values()), "S5 failed: the confirmatory run does not start"
+	_write(Path(out) / "s5.json", {"head": head, "checks": checks, "passed": all(checks.values()), "values_printed": False})
+	return all(checks.values())
+
+
+def s5_passed_at(path, head):
+	"""The confirmatory gate: a passing S5 written at exactly this HEAD."""
+	assert path.exists(), f"{path} is absent: run and pass S5 at this commit first"
+	rec = json.loads(path.read_text())
+	assert rec["head"] == head, f"S5 ran at {rec['head']}, HEAD is {head}: rerun S5 at this commit"
+	assert rec["passed"] and all(rec["checks"].values()), "S5 did not pass: the confirmatory run does not start"
 
 
 # --- one model --------------------------------------------------------------------------------------------------------
@@ -170,51 +188,74 @@ def run_model(T, task, seed, name, want, ckpt_dir, out, device, head):
 		"s_over_m1": s_primary / m1, "median_s_over_0p05_Bnorm": float(np.median(b_ratio)),
 		"seconds": seconds, "head": head})
 	_write(target, {"task": task, "seed": seed, "checkpoint_sha256": digest, "head": head, "stats": stats})   # last: its existence means complete
-	print(f"{task} s{seed}: done, mean return {np.mean(returns):.1f}, {seconds:.0f}s", flush=True)
+	print(f"{task} s{seed}: done, {seconds:.0f}s", flush=True)   # no return on screen: it stays in the sealed diagnostics file
 	del agent, m64
 	torch.cuda.empty_cache()
 
 
 def write_manifest(out):
-	"""sha256sum -b format, LC_ALL=C order, then the digest of the manifest itself (the sealed-output receipt)."""
+	"""sha256sum -b format, LC_ALL=C order, then the digest of the manifest itself (the sealed-output receipt), written
+	next to the stage directory so the receipt is not inside what it seals."""
 	files = sorted((p for p in out.rglob("*") if p.is_file() and p.name != "MANIFEST.sha256"),
 	               key=lambda p: p.relative_to(out).as_posix().encode())
 	lines = "".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()} *./{p.relative_to(out).as_posix()}\n" for p in files)
 	(out / "MANIFEST.sha256").write_bytes(lines.encode("utf-8"))
-	return hashlib.sha256(lines.encode("utf-8")).hexdigest(), len(files)
+	digest = hashlib.sha256(lines.encode("utf-8")).hexdigest()
+	(out.parent / f"{out.name}.manifest-digest.txt").write_bytes(f"{digest}  {out.name}/MANIFEST.sha256  head {HEAD}\n".encode("utf-8"))
+	return digest, len(files)
+
+
+def start(out, args, head, stage):
+	out.mkdir(parents=True, exist_ok=True)
+	run_json = out / "RUN.json"
+	if run_json.exists():
+		assert json.loads(run_json.read_text())["head"] == head, f"{out} was started at a different HEAD; use a new --results"
+	else:
+		_write(run_json, {"stage": stage, "head": head, "freeze": FREEZE_SHA, "go_ahead": args.go_ahead,
+		                  "started_unix": time.time(), "tasks": getattr(args, "tasks", None) or CFG["models"]["tasks"]})
+	A.write_environment(out)
 
 
 def main():
+	global HEAD
 	ap = argparse.ArgumentParser()
-	ap.add_argument("--tdmpc2", required=True, help="path to the tdmpc2/tdmpc2 package directory")
-	ap.add_argument("--ckpt-dir", required=True)
-	ap.add_argument("--out", default=str(ROOT / "results"))
-	ap.add_argument("--go-ahead", required=True, help="the reviewer's explicit execution go-ahead: who, when, which message")
-	ap.add_argument("--tasks", nargs="*")
+	sub = ap.add_subparsers(dest="stage", required=True)
+	for name in ("s5", "confirmatory"):
+		p = sub.add_parser(name)
+		p.add_argument("--tdmpc2", required=True, help="path to the tdmpc2/tdmpc2 package directory")
+		p.add_argument("--results", default=str(ROOT / "results"))
+		p.add_argument("--go-ahead", required=True, help="the reviewer's explicit execution go-ahead: who, when, which message")
+		if name == "confirmatory":
+			p.add_argument("--ckpt-dir", required=True)
+			p.add_argument("--tasks", nargs="*")
 	args = ap.parse_args()
 	assert args.go_ahead.strip(), "an empty go-ahead record"
 	assert torch.cuda.is_available(), "TD-MPC2 hard-codes cuda:0"
-	head = provenance()
+	HEAD = head = provenance()
 	print(f"CODE IDENTITY: repository HEAD {head}  (freeze {FREEZE_SHA}, frozen files byte-identical)", flush=True)
-	out = Path(args.out)
-	for d in ("work", "diagnostics", "pairs"):
-		(out / d).mkdir(parents=True, exist_ok=True)
-	run_json = out / "RUN.json"
-	if run_json.exists():
-		assert json.loads(run_json.read_text())["head"] == head, "results/ was started at a different HEAD; use a new --out"
-	else:
-		_write(run_json, {"head": head, "freeze": FREEZE_SHA, "go_ahead": args.go_ahead,
-		                  "started_unix": time.time(), "tasks": args.tasks or CFG["models"]["tasks"]})
-	A.write_environment(out)
+	results = Path(args.results)
+	out = results / args.stage
 	device = torch.device("cuda:0")
+
+	if args.stage == "s5":
+		start(out, args, head, "s5")
+		T = A.import_tdmpc2(args.tdmpc2)
+		ok = s5(T, device, out, head)
+		digest, n = write_manifest(out)
+		print(f"S5 {'PASSED' if ok else 'FAILED'}. MANIFEST: {n} files, SHA-256 of {out.name}/MANIFEST.sha256 = {digest}", flush=True)
+		raise SystemExit(0 if ok else 1)
+
+	s5_passed_at(results / "s5" / "s5.json", head)
+	start(out, args, head, "confirmatory")
+	for d in ("work", "diagnostics", "pairs"):
+		(out / d).mkdir(exist_ok=True)
 	T = A.import_tdmpc2(args.tdmpc2)
-	s5(T, device, out, head)
 	for task, seed, name, want in model_list():
 		if args.tasks and task not in args.tasks:
 			continue
 		run_model(T, task, seed, name, want, args.ckpt_dir, out, device, head)
 	digest, n = write_manifest(out)
-	print(f"MANIFEST: {n} files, SHA-256 of results/MANIFEST.sha256 = {digest}\nOutputs stay sealed. No verdict was computed.", flush=True)
+	print(f"MANIFEST: {n} files, SHA-256 of {out.name}/MANIFEST.sha256 = {digest}\nOutputs stay sealed. No verdict was computed.", flush=True)
 
 
 if __name__ == "__main__":

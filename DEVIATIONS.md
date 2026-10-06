@@ -3,7 +3,7 @@
 The frozen files (`README.md`, `PREREGISTRATION.md`, `config/prereg.yaml`) are byte-identical to commit `7c98789`.
 This file is the only place a departure or a reading is recorded. Each entry states what had been seen when it was written.
 
-**What had been seen, for every entry dated 6 Oct 2026:** nothing from any trained checkpoint. No `torch.load` of any of
+**What had been seen, for every entry dated 6 Oct 2026 (C1-C7, N1):** nothing from any trained checkpoint. No `torch.load` of any of
 the 15 files, no forward pass of any trained model, no discovery-set run and no S5. Only synthetic maps (S1-S4) were run.
 
 ---
@@ -97,3 +97,24 @@ Choices a reader should know, each of which makes the run stricter or more recor
   SimNorm tangent space, so this equals the norm of Uᵀ B used by protocols 1-2.
 - **Cost estimate, unverified:** about 190k vmapped JVP calls of batch 24 per model, in float64 on a T4. Protocol 1 took about
   23 minutes per seed for its Jacobians. No Q1 timing exists.
+
+## C7. The run is split into two commands, S5 and confirmatory, each with its own go-ahead (6 Oct 2026) — not a deviation
+
+The reviewer approved the code-writing step (6 Oct 2026) and asked, for the execution gate, for one exact command for S5
+and one for the confirmatory run. `run_q1.py` therefore has two stages, `s5` and `confirmatory`, and `reproduce.sh` has
+`s5` and `confirmatory` in place of `run`. What had been seen: as in C6, nothing from any checkpoint, and no TD-MPC2 code
+was run. Neither stage has been executed.
+- **Each stage needs its own `--go-ahead` record** and repeats the provenance checks of C6.
+- **`confirmatory` refuses unless `results/s5/s5.json` exists, was written at the same HEAD, and every check passed.** A fix
+  after a failed S5 is a new commit, so S5 must pass again at that commit before any checkpoint is loaded. A failed S5 is
+  now recorded in `s5.json` (`"passed": false`) and the stage exits non-zero, where C6 raised before writing.
+- **Output layout:** `results/s5/` and `results/confirmatory/`. Each ends with `MANIFEST.sha256` in `sha256sum -b` format
+  (`<hex> *./<path>`, one line per output file, byte order of the path) and the SHA-256 of that manifest written to
+  `results/{stage}.manifest-digest.txt`, outside the directory it seals, together with HEAD. `scripts/lh_verdict.py` now
+  reads `results/confirmatory/` by default.
+- **`tests/test_run_gate.py`** (6 tests) checks the S5 gate against hand-written `s5.json` files and the manifest format on
+  a temporary directory. No GPU, TD-MPC2 or checkpoint is involved, and S5 itself is not run.
+- `ENVIRONMENT.txt` is now written as bytes, so it has LF line endings on every platform.
+- **The confirmatory console shows no episode return.** C6 printed each model's mean return when it finished. The protocol-2
+  incident (P1) recorded episode returns as one of the things seen before authorisation, so the console now prints only
+  the model name and wall time. The returns stay in the sealed `diagnostics/{task}_s{seed}.json`.

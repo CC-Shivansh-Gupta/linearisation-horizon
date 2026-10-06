@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# One entry point. Needs a CUDA GPU for `run` (TD-MPC2 hard-codes cuda:0) and internet for `setup` and `download`.
+# One entry point. Needs a CUDA GPU for `s5` and `confirmatory` (TD-MPC2 hard-codes cuda:0) and internet for `setup` and `download`.
 #
 #   bash reproduce.sh test       # the synthetic validation suite (S1-S4 and the decision logic); no GPU, no checkpoint
 #   bash reproduce.sh setup      # install the pinned stack, fetch TD-MPC2 at the pinned commit
 #   bash reproduce.sh download   # fetch the 15 checkpoints and SHA-256 check each; loads none of them
-#   GO_AHEAD="<who, when, which message>" bash reproduce.sh run [tasks...]
-#                                # S5 first, then the confirmatory run. Refuses without GO_AHEAD (PREREGISTRATION.md §9).
-#   bash reproduce.sh verdict    # the verdict, from results/work. Run only after the reviewer releases the outputs.
+#   GO_AHEAD="<who, when, which message>" bash reproduce.sh s5
+#                                # S5 only: random-init network, no checkpoint. Writes results/s5/. Refuses without GO_AHEAD.
+#   GO_AHEAD="<who, when, which message>" bash reproduce.sh confirmatory [tasks...]
+#                                # the 15 checkpoints. Refuses without GO_AHEAD and without a passing S5 at the same HEAD.
+#                                # Writes results/confirmatory/ (sealed) and prints only the manifest digest (§9 step 3).
+#   bash reproduce.sh verdict    # the verdict, from results/confirmatory. Run only after the reviewer releases the outputs.
 set -euo pipefail
 cd "$(dirname "$0")"
 EXT=ext
@@ -50,9 +53,11 @@ case "${1:-}" in
 	test)     for t in tests/test_*.py; do python "$t"; done ;;
 	setup)    setup ;;
 	download) shift; download "$@" ;;
-	run)      shift
+	s5)       : "${GO_AHEAD:?set GO_AHEAD to the reviewer explicit execution go-ahead (who, when, which message)}"
+	          python -m scripts.run_q1 s5 --tdmpc2 "$EXT/tdmpc2/tdmpc2" --go-ahead "$GO_AHEAD" ;;
+	confirmatory) shift
 	          : "${GO_AHEAD:?set GO_AHEAD to the reviewer explicit execution go-ahead (who, when, which message)}"
-	          python -m scripts.run_q1 --tdmpc2 "$EXT/tdmpc2/tdmpc2" --ckpt-dir "$CKPT" --go-ahead "$GO_AHEAD" ${@:+--tasks "$@"} ;;
+	          python -m scripts.run_q1 confirmatory --tdmpc2 "$EXT/tdmpc2/tdmpc2" --ckpt-dir "$CKPT" --go-ahead "$GO_AHEAD" ${@:+--tasks "$@"} ;;
 	verdict)  python -m scripts.lh_verdict ;;
-	*) sed -n 2,11p "$0"; exit 1 ;;
+	*) sed -n 2,14p "$0"; exit 1 ;;
 esac

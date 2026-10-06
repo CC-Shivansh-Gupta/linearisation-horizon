@@ -1,9 +1,9 @@
 """Q1 verdict (PREREGISTRATION.md §6). Reads only config/prereg.yaml and the per-model result files.
 
-    python -m scripts.lh_verdict [results_dir]
+    python -m scripts.lh_verdict [results_dir]        (default results/confirmatory)
 
-Per-model files: results/work/{task}_s{seed}.json (the §5 statistics, keyed by scale then linearisation) and, for an
-excluded checkpoint, results/diagnostics/{task}_s{seed}_load_failure.json. h* is recomputed here from the stored
+Per-model files: results/confirmatory/work/{task}_s{seed}.json (the §5 statistics, keyed by scale then linearisation)
+and, for an excluded checkpoint, results/confirmatory/diagnostics/{task}_s{seed}_load_failure.json. h* is recomputed here from the stored
 per-horizon medians against the tolerance in the config, so no stored h* decides anything.
 
 Verdict labels
@@ -84,7 +84,7 @@ def load_set(base, cfg):
 
 
 def main(argv):
-	base = Path(argv[1]) if len(argv) > 1 else ROOT / "results"
+	base = Path(argv[1]) if len(argv) > 1 else ROOT / "results" / "confirmatory"
 	cfg = load_cfg()
 	models, excluded = load_set(base, cfg)
 	out = decide(models, cfg)
