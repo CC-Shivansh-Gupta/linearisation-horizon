@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+# sealed until the reviewer releases the outputs; commit with `git add -f` only then
+results/
+ext/
+ckpt/

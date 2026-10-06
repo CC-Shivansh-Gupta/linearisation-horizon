@@ -128,12 +128,11 @@ def _per_h(delta_h, pred_h, delta_norm):
 	"""e, angle (deg), ||P delta||, and the response-too-small flag, for (B, 512) arrays at one horizon."""
 	dn = torch.linalg.vector_norm(delta_h, dim=-1)
 	pn = torch.linalg.vector_norm(pred_h, dim=-1)
-	small = dn < UNRESOLVED_REL * delta_norm
-	with np.errstate(all="ignore"):
-		e = (torch.linalg.vector_norm(delta_h - pred_h, dim=-1) / dn).numpy()
-		cos = ((delta_h * pred_h).sum(-1) / (dn * pn)).numpy()
-		angle = np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
-	return e, angle, pn.numpy(), small.numpy()
+	small = (dn < UNRESOLVED_REL * delta_norm).cpu().numpy()
+	e = (torch.linalg.vector_norm(delta_h - pred_h, dim=-1) / dn).cpu().numpy()
+	cos = ((delta_h * pred_h).sum(-1) / (dn * pn)).cpu().numpy()
+	angle = np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+	return e, angle, pn.cpu().numpy(), small
 
 
 def anchor_errors(f, y_tau, acts, etas, eps_list, grid, real_points):
@@ -146,37 +145,43 @@ def anchor_errors(f, y_tau, acts, etas, eps_list, grid, real_points):
 	Returns {eps: {"nom"|"real": {"e", "angle", "pnorm": (B, G) float arrays, "unres": (B, G) bool}}}.
 	An unresolved pair has e = +inf and angle = pnorm = nan, at every h if the target size is not reached, and at that
 	h only if the response is below 1e-10 of the perturbation.
+
+	The perturbations are built on the CPU (bisection is scalar work), then every resolved (eps, direction) pair is
+	propagated in one batch. A pair's result does not depend on which other pairs share the batch.
 	"""
 	h_max, B, G = max(grid), etas.shape[0], len(grid)
+	eps_list = list(eps_list)
 	z0 = simnorm(y_tau)
 	nom = rollout(f, z0, acts, h_max)
-	out = {}
-	for eps in eps_list:
-		s = target_size(eps)
-		deltas = [make_delta(y_tau, etas[b], s) for b in range(B)]
-		ok = np.array([d is not None for d in deltas])
-		res = {L: {"e": np.full((B, G), np.inf), "angle": np.full((B, G), np.nan),
-		           "pnorm": np.full((B, G), np.nan), "unres": np.ones((B, G), dtype=bool)} for L in ("nom", "real")}
-		if ok.any():
-			D = torch.stack([d for d in deltas if d is not None])
-			dnorm = torch.linalg.vector_norm(D, dim=-1)
-			pert = rollout(f, z0 + D, acts, h_max)
-			preds = {"nom": tangent_chain(f, nom, acts, D, grid), "real": tangent_chain(f, real_points, acts, D, grid)}
-			idx = np.flatnonzero(ok)
-			for gi, h in enumerate(grid):
-				delta_h = pert[:, h] - nom[h]
-				for L in ("nom", "real"):
-					e, angle, pn, small = _per_h(delta_h, preds[L][h], dnorm)
-					e = np.where(np.isfinite(e), e, np.inf)
-					e[small] = np.inf
-					angle[small] = np.nan
-					pn = np.where(small, np.nan, pn)
-					res[L]["e"][idx, gi] = e
-					res[L]["angle"][idx, gi] = angle
-					res[L]["pnorm"][idx, gi] = pn
-					res[L]["unres"][idx, gi] = small
-		out[eps] = res
-	return out
+	y_cpu, etas_cpu = y_tau.cpu(), etas.cpu()
+	deltas = {eps: [make_delta(y_cpu, etas_cpu[b], target_size(eps)) for b in range(B)] for eps in eps_list}
+	res = {eps: {L: {"e": np.full((B, G), np.inf), "angle": np.full((B, G), np.nan),
+	                 "pnorm": np.full((B, G), np.nan), "unres": np.ones((B, G), dtype=bool)} for L in ("nom", "real")}
+	       for eps in eps_list}
+	pairs = [(ei, b) for ei, eps in enumerate(eps_list) for b in range(B) if deltas[eps][b] is not None]
+	if not pairs:
+		return res
+	ei_arr, b_arr = np.array([p[0] for p in pairs]), np.array([p[1] for p in pairs])
+	D = torch.stack([deltas[eps_list[ei]][b] for ei, b in pairs]).to(device=z0.device, dtype=z0.dtype)
+	dnorm = torch.linalg.vector_norm(D, dim=-1)
+	pert = rollout(f, z0 + D, acts, h_max)
+	preds = {"nom": tangent_chain(f, nom, acts, D, grid), "real": tangent_chain(f, real_points, acts, D, grid)}
+	for gi, h in enumerate(grid):
+		delta_h = pert[:, h] - nom[h]
+		for L in ("nom", "real"):
+			e, angle, pn, small = _per_h(delta_h, preds[L][h], dnorm)
+			e = np.where(np.isfinite(e), e, np.inf)
+			e[small] = np.inf
+			angle[small] = np.nan
+			pn = np.where(small, np.nan, pn)
+			for ei, eps in enumerate(eps_list):
+				m = ei_arr == ei
+				r = res[eps][L]
+				r["e"][b_arr[m], gi] = e[m]
+				r["angle"][b_arr[m], gi] = angle[m]
+				r["pnorm"][b_arr[m], gi] = pn[m]
+				r["unres"][b_arr[m], gi] = small[m]
+	return res
 
 
 # --- §5 per-model statistics, §2 validity horizon -----------------------------------------------------------------

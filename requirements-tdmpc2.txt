@@ -1,0 +1,13 @@
+# The TD-MPC2 stack at the pinned commit e9f5932, as pinned for protocols 1-2 (hankel-hierarchy requirements-tdmpc2.txt).
+# torch is not pinned here: use the platform's CUDA build, recorded in results/ENVIRONMENT.txt.
+# dm-control 1.0.24 / mujoco 3.2.4 are the protocol-1 deviation C11 versions, inherited unchanged (PREREGISTRATION.md §3.1).
+dm-control==1.0.24
+mujoco==3.2.4
+gymnasium==0.29.1
+hydra-core==1.3.2
+omegaconf==2.3.0
+tensordict==0.8.3
+termcolor==2.4.0
+imageio==2.34.1
+pyyaml
+scipy

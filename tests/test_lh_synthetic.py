@@ -215,6 +215,20 @@ def test_batched_jvp_equals_one_direction_at_a_time():
 		assert torch.allclose(batch[b], one, rtol=1e-12, atol=1e-14)
 
 
+def test_results_do_not_depend_on_which_scales_share_the_batch():
+	f = nonlinear_map(2, gain=2.0)
+	y, acts, etas = make_anchor(2)
+	pts = nominal_points(f, y, acts)
+	together = lh.anchor_errors(f, y, acts, etas, [1e-3, 1e-2, 1e-1], GRID, pts)
+	for eps in (1e-3, 1e-2, 1e-1):
+		alone = lh.anchor_errors(f, y, acts, etas, [eps], GRID, pts)[eps]
+		for L in ("nom", "real"):
+			assert np.array_equal(together[eps][L]["unres"], alone[L]["unres"])
+			for k in ("e", "pnorm"):
+				a, b = together[eps][L][k], alone[L][k]
+				assert np.array_equal(np.isfinite(a), np.isfinite(b)) and np.allclose(a[np.isfinite(a)], b[np.isfinite(b)], rtol=1e-9)
+
+
 # --- §2 validity horizon and §6 decision rules -----------------------------------------------------------------------
 
 def test_validity_horizon_needs_a_pass_at_every_grid_horizon():

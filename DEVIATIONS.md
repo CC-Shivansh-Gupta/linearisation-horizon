@@ -69,3 +69,31 @@ contractive map (gain 1) the response falls below that floor by h = 64 and the m
 though the linearisation is accurate wherever it is defined. Protocol 1 found R-full strongly contractive (γ between 0.55 and
 0.82), so a real network can be contractive over 64 steps. The frozen rule is applied as written. `unresolved_frac` is
 reported at every h, so a reader can tell a fail through unresolved pairs from a fail through error. Nothing is changed.
+
+## C6. Real-model adapter and driver added, NOT RUN (6 Oct 2026) — not a deviation
+
+Files: `scripts/tdmpc2_adapter.py`, `scripts/run_q1.py`, `reproduce.sh`, `requirements-tdmpc2.txt`, and `results/ext/ckpt` in
+`.gitignore`. **Nothing here has been executed.** Only `py_compile` and `bash -n` were run on them, so no import of
+`tdmpc2`, `dm_control` or `torch.load` has happened, and the first real execution of this path is S5. What had been seen:
+nothing from any checkpoint, and no TD-MPC2 code was run.
+
+Choices a reader should know, each of which makes the run stricter or more recorded, never looser:
+- **A run needs a recorded go-ahead.** `run_q1.py` refuses to start without `--go-ahead`, which is copied into
+  `results/RUN.json`. It also refuses unless the freeze commit is an ancestor of HEAD, the three frozen files equal the freeze
+  commit, and no tracked file is modified. HEAD is printed and written into `RUN.json` and every per-model file (§11).
+- **S5 runs first and aborts the run on any failure.** It stores pass/fail per check and no value. Beyond the four things
+  §10 lists (shapes, dtypes, determinism, L-nom = L-real at k = 0), it also checks that `SimNorm(y)` reproduces the encoder, that
+  the JVP through the real network equals the explicit Jacobian product at one step, and that batched `next` equals unbatched.
+  These are plumbing checks on a random-initialisation network; they compare two computations of the same quantity.
+- **The run computes no verdict and prints no statistic.** It writes `results/MANIFEST.sha256` and prints that file's
+  SHA-256, so the outputs can stay sealed and only a digest be sent. `results/` is git-ignored.
+- **Load handling.** `agent.load(path)` in the pinned code, with every exception recorded as a load failure and the file
+  excluded (§4, R2). A failed SHA-256 check is also an exclusion. An absent file raises, so a download problem cannot masquerade
+  as an exclusion. An architecture assertion failing inside the load block is recorded as an exclusion with its message.
+- **`lh.anchor_errors` now batches all scales together.** A test (`test_results_do_not_depend_on_which_scales_share_the_batch`)
+  checks that a pair's result does not depend on which other pairs share the batch. This is a change of speed, not of
+  definition.
+- **‖B̃_τ‖₂ (§5)** is computed as the spectral norm of ∂f/∂a at (z_τ, a_τ) in the full 512 coordinates. The output lies in the
+  SimNorm tangent space, so this equals the norm of Uᵀ B used by protocols 1-2.
+- **Cost estimate, unverified:** about 190k vmapped JVP calls of batch 24 per model, in float64 on a T4. Protocol 1 took about
+  23 minutes per seed for its Jacobians. No Q1 timing exists.
